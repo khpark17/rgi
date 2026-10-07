@@ -61,9 +61,9 @@ MASTER_URLS = {
     "KOSDAQ": "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip",
 }
 
-RGI_VERSION = "v.261007_14"
-RGIS_VERSION = "v.261007_14"
-BRIDGE_VERSION = "17.0.0-k28-atomic-release"
+RGI_VERSION = "v.261007_15"
+RGIS_VERSION = "v.261007_15"
+BRIDGE_VERSION = "17.1.0-k28-live-acceptance"
 
 
 def now() -> float:
@@ -2112,16 +2112,28 @@ class LiveRGIEngine:
             if ws_symbols: await self.rt.set_symbols(ws_symbols)
             cov=self.succeeded/self.total if self.total else 0.0
             good=[f for f in self.features.values() if "error" not in f]
-            majors=[]  # K6 missing => hard fail-closed Major by design.
-            minors=sorted([f for f in good if f["list_evidence"]["minor_eligible"]],key=lambda f:f["list_evidence"]["minor_ordering_score"],reverse=True)[:10]
+            majors=[]  # Full official Major remains fail-closed until K6/PIT/OOS gates pass.
+            radar_pool=[f for f in good if f["list_evidence"]["minor_eligible"]]
+            radar_pool=sorted(radar_pool,key=lambda f:(
+                f.get("score",{}).get("remain") if f.get("score",{}).get("remain") is not None else -9,
+                f.get("score",{}).get("buy") if f.get("score",{}).get("buy") is not None else -9,
+                f["list_evidence"]["minor_ordering_score"]),reverse=True)[:15]
+            radar_rows=[]
+            for i,f in enumerate(radar_pool):
+                eh=f.get("enrichment_health") or {}
+                radar_rows.append({"rank":i+1,"symbol":f["symbol"],"name":f["name"],"league":"RADAR",
+                    "state":"DEGRADED" if eh.get("degraded") else f.get("score",{}).get("state"),
+                    "buy":f.get("score",{}).get("buy"),"sell":f.get("score",{}).get("sell"),
+                    "remaining_edge":f.get("score",{}).get("remain"),"overall":f.get("score",{}).get("overall"),
+                    "reflection":f.get("terms",{}).get("reflection"),"confidence":f.get("score",{}).get("confidence"),
+                    "missing_blocks":f.get("score",{}).get("missing_blocks"),"degraded_components":eh.get("missing_components",[]),
+                    "data_quality":"PROVISIONAL_K6" if not eh.get("degraded") else "DEGRADED_FAIL_SOFT",
+                    "why_now":f["list_evidence"]["reason"]})
             self.list_result={
                 "classification":"PROVISIONAL_RADAR",
-                "majors":majors,
-                "minors":[{"rank":i+1,"symbol":f["symbol"],"name":f["name"],"league":"MINOR","state":"EARLY_RADAR",
-                           "why_now":f["list_evidence"]["reason"],"reflection":f["terms"]["reflection"],
-                           "confidence":f["score"]["confidence"],"data_quality":"K6_TITLE_ONLY_PARTIAL",
-                           "ordering_score":f["list_evidence"]["minor_ordering_score"]} for i,f in enumerate(minors)],
-                "coverage_ratio":cov,"reason":"Fast Radar + K1-K5/K7-K8 + KIS title-only K6-Lite assembled; full DART/earnings/consensus K6 still required for official Major",
+                "majors":majors,"radar":radar_rows,"minors":radar_rows,
+                "target_count":15,"actual_count":len(radar_rows),"coverage_ratio":cov,
+                "reason":"Live 80-candidate pipeline accepted; ~15 radar is current-edge sorted. Official Major remains fail-closed until K6 calendar + strict PIT surprise + OOS gates pass.",
                 "observed_at":utc_iso(),
             }
             self.pit.scan(datetime.fromtimestamp(self.started_at,timezone.utc).isoformat(),utc_iso(),"FAST_RADAR",
@@ -2683,6 +2695,22 @@ async def rgi_scan_errors():
 
 @app.get("/rgi/list")
 async def rgi_list(): return live.list_result
+
+@app.get("/rgi/live")
+async def rgi_live():
+    rows=[]
+    for r in live.list_result.get("radar",live.list_result.get("minors",[])):
+        buy=r.get("buy"); sell=r.get("sell")
+        state=r.get("state") or "UNKNOWN"
+        sell_state="WITHHELD_K6" if sell is None else ("HIGH" if sell>=7 else ("MID" if sell>=4 else "LOW"))
+        rows.append({"symbol":r.get("symbol"),"name":r.get("name"),"state":state,
+                     "buy":buy,"sell":sell,"sell_state":sell_state,
+                     "remaining_edge":r.get("remaining_edge"),"confidence":r.get("confidence"),
+                     "data_quality":r.get("data_quality"),"degraded_components":r.get("degraded_components",[])})
+    return {"rgi":RGI_VERSION,"rgis":RGIS_VERSION,"bridge":BRIDGE_VERSION,
+            "classification":live.list_result.get("classification"),"observed_at":live.list_result.get("observed_at"),
+            "coverage_ratio":live.list_result.get("coverage_ratio"),"count":len(rows),"rows":rows,
+            "sell_policy":"WITHHELD when negative-event/K6 evidence is incomplete; SELL is independently computed, never inferred from BUY."}
 
 @app.get("/rgi/score/{symbol}")
 async def rgi_score(symbol:str):
