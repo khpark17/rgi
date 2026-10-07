@@ -1914,7 +1914,7 @@ class LiveRGIEngine:
         cov=self.succeeded/self.total if self.total else 0.0
         return {"running":self.running,"started_at":self.started_at,"finished_at":self.finished_at,"last_error":self.last_error,
                 "universe":self.universe.status(),"universe_total":self.universe_total,"discovery_quote_total":self.total,"attempted":self.attempted,"succeeded":self.succeeded,
-                "failed":self.failed,"coverage_ratio":cov,"candidate_n":self.candidate_n,"enriched":len(self.features),"enriched_ok":sum(1 for f in self.features.values() if "error" not in f),"enriched_error":sum(1 for f in self.features.values() if "error" in f),
+                "failed":self.failed,"coverage_ratio":cov,"candidate_n":self.candidate_n,"enriched":len(self.features),"enriched_ok":sum(1 for f in self.features.values() if "error" not in f),"enriched_error":sum(1 for f in self.features.values() if "error" in f),"error_samples":[{"symbol":k,"error":v.get("error")} for k,v in self.features.items() if isinstance(v,dict) and "error" in v][:5],
                 "snapshot_first_at":self.first_quote_at,"snapshot_last_at":self.last_quote_at,
                 "snapshot_span_sec":((self.last_quote_at-self.first_quote_at) if self.first_quote_at and self.last_quote_at else None),
                 "classification":self.list_result.get("classification"),"k6_visible_live":"KIS_TITLE_ONLY_PARTIAL","market_data_mode":"UN_INTEGRATED","intraday_flow_estimate":True,"program_ws_integrated":True,
@@ -2644,6 +2644,17 @@ async def rgi_scan_start(candidate_n:int=Query(80,ge=10,le=200), limit:int=Query
 
 @app.get("/rgi/scan/status")
 async def rgi_scan_status(): return live.status()
+
+@app.get("/rgi/scan/errors")
+async def rgi_scan_errors():
+    errors=[]
+    for symbol,f in live.features.items():
+        if isinstance(f,dict) and "error" in f:
+            errors.append({"symbol":symbol,"name":f.get("name"),"market":f.get("market"),
+                           "error_stage":f.get("error_stage"),"error":f.get("error")})
+    return {"count":len(errors),"enriched_total":len(live.features),
+            "enriched_ok":sum(1 for f in live.features.values() if isinstance(f,dict) and "error" not in f),
+            "errors":errors}
 
 @app.get("/rgi/list")
 async def rgi_list(): return live.list_result
