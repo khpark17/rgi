@@ -214,7 +214,7 @@ class RealtimeManager:
                 continue
             symbol = row[0]
             if len(symbol) != 6 or not symbol.isdigit() or symbol not in self.symbols:
-    continue
+                continue
 
 
             
