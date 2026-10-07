@@ -63,7 +63,7 @@ MASTER_URLS = {
 
 RGI_VERSION = "v.261007_15"
 RGIS_VERSION = "v.261007_15"
-BRIDGE_VERSION = "17.1.0-k28-live-acceptance"
+BRIDGE_VERSION = "17.2.0-k29-command-automation"
 
 
 def now() -> float:
@@ -2711,6 +2711,108 @@ async def rgi_live():
             "classification":live.list_result.get("classification"),"observed_at":live.list_result.get("observed_at"),
             "coverage_ratio":live.list_result.get("coverage_ratio"),"count":len(rows),"rows":rows,
             "sell_policy":"WITHHELD when negative-event/K6 evidence is incomplete; SELL is independently computed, never inferred from BUY."}
+
+
+async def _ensure_fresh_live_scan(candidate_n:int=80, limit:int=0, max_wait_seconds:int=240):
+    """Command automation gate: refresh stale/empty live state and wait for completion."""
+    stale=True
+    observed=live.list_result.get("observed_at")
+    if observed and live.list_result.get("classification")!="NO_SCAN" and live.features:
+        try:
+            age=(datetime.now(timezone.utc)-datetime.fromisoformat(str(observed).replace("Z","+00:00"))).total_seconds()
+            stale=age>300
+        except Exception:
+            stale=True
+    if stale and not live.running:
+        await live.start_scan(candidate_n,limit)
+    waited=0.0
+    while live.running and waited<max_wait_seconds:
+        await asyncio.sleep(0.5); waited+=0.5
+    if live.running:
+        raise HTTPException(504,"RGI scan did not finish within automation timeout")
+    st=live.status()
+    if st.get("enriched_error",0)>0:
+        # Fail closed for command output: do not silently certify partial failures.
+        raise HTTPException(503,detail={"message":"RGI live scan completed with enrichment errors","status":st})
+    return st
+
+def _live_payload():
+    rows=[]
+    for r in live.list_result.get("radar",live.list_result.get("minors",[])):
+        buy=r.get("buy"); sell=r.get("sell")
+        rows.append({"symbol":r.get("symbol"),"name":r.get("name"),"state":r.get("state") or "UNKNOWN",
+                     "buy":buy,"sell":sell,
+                     "sell_state":"WITHHELD_K6" if sell is None else ("HIGH" if sell>=7 else ("MID" if sell>=4 else "LOW")),
+                     "remaining_edge":r.get("remaining_edge"),"confidence":r.get("confidence"),
+                     "data_quality":r.get("data_quality"),"degraded_components":r.get("degraded_components",[])})
+    return {"rgi":RGI_VERSION,"rgis":RGIS_VERSION,"bridge":BRIDGE_VERSION,
+            "classification":live.list_result.get("classification"),"observed_at":live.list_result.get("observed_at"),
+            "coverage_ratio":live.list_result.get("coverage_ratio"),"count":len(rows),"rows":rows,
+            "sell_policy":"WITHHELD when negative-event/K6 evidence is incomplete; SELL is independently computed, never inferred from BUY."}
+
+@app.get("/rgi/command/{command}")
+async def rgi_command(command:str, force:bool=False):
+    """
+    One-call automation surface for ChatGPT.
+    Supported: list, rgi, rgis, rgivs, rgil, rgiv, rgiu, rgix, 명령어.
+    Read/analysis commands auto-refresh live scan. rgiu is audit-only here: release mutation remains gated.
+    """
+    cmd=command.strip().lower()
+    supported=["list","rgi","rgis","rgivs","rgil","rgiv","rgiu","rgix","명령어"]
+    if cmd not in supported:
+        raise HTTPException(404,detail={"supported":supported})
+    if cmd=="명령어":
+        return {"supported":supported,"automation":"SERVER_DISPATCH","bridge":BRIDGE_VERSION}
+
+    # All market-facing commands begin from one fresh, complete live snapshot.
+    if cmd in ("list","rgi","rgis","rgivs","rgil","rgix"):
+        await _ensure_fresh_live_scan(80,0)
+
+    if cmd=="list":
+        return {"command":"list","result":live.list_result,"status":live.status()}
+    if cmd=="rgi":
+        return {"command":"rgi","result":_live_payload(),"status":live.status()}
+
+    # Shadow remains isolated: expose validation evidence/status, never mix into Production.
+    if cmd=="rgis":
+        return {"command":"rgis","production":_live_payload(),
+                "shadow":{"metrics":pit.shadow_all_metrics(5),"policy":"SHADOW_ONLY_NO_PRODUCTION_MIX"}}
+    if cmd=="rgivs":
+        return {"command":"rgivs","production":_live_payload(),
+                "shadow":{"metrics":pit.shadow_all_metrics(5)},
+                "comparison_policy":"incremental-value / common-cause / paired-OOS; no unvalidated promotion"}
+
+    if cmd=="rgil":
+        return {"command":"rgil","note":"Uses persisted PIT/list history only; no fabricated backfill.",
+                "pit":pit.status(),"list_now":live.list_result}
+
+    def validation_bundle():
+        return {"production":pit.production_revalidation(5),
+                "shadow":pit.shadow_all_metrics(5),
+                "rotation":pit.rotation_metrics(),
+                "pit_integrity":pit.integrity_report(),
+                "operational":guard.status()}
+
+    if cmd=="rgiv":
+        return {"command":"rgiv","validation":validation_bundle(),
+                "policy":"No predictive-weight change without real OOS evidence."}
+
+    if cmd=="rgiu":
+        # Never silently mutate/release based only on an HTTP GET.
+        return {"command":"rgiu","decision":"REVIEW_REQUIRED","validation":validation_bundle(),
+                "current":{"rgi":RGI_VERSION,"rgis":RGIS_VERSION,"bridge":BRIDGE_VERSION},
+                "policy":"Atomic release/version/recovery/alert sync requires validated change; no automatic alpha promotion."}
+
+    # rgix exact order: list -> rgiv -> rgivs -> rgil -> rgiu.
+    if cmd=="rgix":
+        vb=validation_bundle()
+        return {"command":"rgix","order":["list","rgiv","rgivs","rgil","rgiu"],
+                "list":live.list_result,
+                "rgiv":{"validation":vb},
+                "rgivs":{"production":_live_payload(),"shadow":{"metrics":pit.shadow_all_metrics(5)}},
+                "rgil":{"pit":pit.status(),"list_now":live.list_result},
+                "rgiu":{"decision":"REVIEW_REQUIRED","validation":vb,
+                        "policy":"No automatic promotion/release without passing evidence gates."}}
 
 @app.get("/rgi/score/{symbol}")
 async def rgi_score(symbol:str):
