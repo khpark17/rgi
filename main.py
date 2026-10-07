@@ -1674,6 +1674,8 @@ def normalize_opinion(rows):
     """Keep raw KIS opinion history while extracting date/target/opinion fields by known aliases."""
     out=[]
     for r in rows or []:
+        if not isinstance(r,dict):
+            continue
         date=r.get("stck_bsop_date") or r.get("date") or r.get("opnn_date") or r.get("data_dt")
         target=_num_text(r.get("hts_goal_prc") or r.get("goal_prc") or r.get("target_price"))
         opinion=r.get("hts_opnn") or r.get("opnn") or r.get("invest_opinion")
@@ -1994,6 +1996,18 @@ class LiveRGIEngine:
                         self.kis.daily(item.symbol),self.kis.investor(item.symbol),self.kis.investor_estimate(item.symbol),
                         self.kis.news_titles(item.symbol),dart_task,self.kis.estimate_perform(item.symbol),
                         self.kis.income_statement(item.symbol,True),self.kis.invest_opinion(item.symbol))
+                    # Canonicalize external live response shapes at the enrichment boundary.
+                    hist=[x for x in (hist if isinstance(hist,list) else []) if isinstance(x,dict)]
+                    inv=[x for x in (inv if isinstance(inv,list) else []) if isinstance(x,dict)]
+                    est=[x for x in (est if isinstance(est,list) else []) if isinstance(x,dict)]
+                    news=[x for x in (news if isinstance(news,list) else []) if isinstance(x,dict)]
+                    opn=[x for x in (opn if isinstance(opn,list) else []) if isinstance(x,dict)]
+                    actual_q=[x for x in (actual_q if isinstance(actual_q,list) else []) if isinstance(x,dict)]
+                    if not isinstance(dart_res,dict):
+                        dart_res={"configured":False,"rows":[],"shape_warning":"DART_NOT_DICT"}
+                    else:
+                        dart_res=dict(dart_res)
+                        dart_res["rows"]=[x for x in (dart_res.get("rows") or []) if isinstance(x,dict)]
                     feat=assemble_symbol(item,q,hist,inv,regimes.get(item.market),self.rt.latest.get(item.symbol),news)
                     feat["intraday_investor_estimate"]=est
                     feat["news_titles"]=news[:20]
@@ -2035,7 +2049,7 @@ class LiveRGIEngine:
                         "earnings_schedule":"K19_ENGINE_READY_OFFICIAL_IR_FEED_PENDING",
                         "analyst_revision":"KIS_INVEST_OPINION" if opn else "NO_DATA"}
                     raw_events=[]
-                    for nr in (news.get("rows") or []):
+                    for nr in news:
                         raw_events.append({"symbol":item.symbol,"title":nr.get("title") or nr.get("news_title") or "",
                                            "available_at":nr.get("date") or nr.get("news_date"),"source":"KIS_NEWS_TITLE","reliability":.70})
                     for dr in (dart_res.get("rows") or []):
@@ -2066,7 +2080,8 @@ class LiveRGIEngine:
                                     (feat.get("k6_full") or {}).get("confidence"),available_at=av)
                     self.pit.append(item.symbol,"assembled_feature",feat,"RGI_K20_ASSEMBLER",feat.get("score",{}).get("confidence"),available_at=av)
                 except Exception as e:
-                    self.features[item.symbol]={"symbol":item.symbol,"name":item.name,"market":item.market,"error":f"{type(e).__name__}:{str(e)[:120]}"}
+                    self.features[item.symbol]={"symbol":item.symbol,"name":item.name,"market":item.market,
+                        "error":f"{type(e).__name__}:{str(e)[:240]}","error_stage":"ENRICHMENT"}
             # K5: only enriched candidate set is tracked in realtime.
             ws_symbols=[s for s,f in self.features.items() if "error" not in f][:min(20,len(self.features))]
             if ws_symbols: await self.rt.set_symbols(ws_symbols)
