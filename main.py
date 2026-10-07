@@ -17,7 +17,7 @@ TOKEN_PATH = "/oauth2/tokenP"
 APPROVAL_PATH = "/oauth2/Approval"
 PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
 PRICE_TR = "FHKST01010100"
-WS_TRADE_TR = "H0STCNT0"
+WS_TRADE_TR = "H0UNCNT0"
 
 
 def now() -> float:
