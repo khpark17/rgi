@@ -266,6 +266,7 @@ class KISClient:
         self.last_auth_error: Optional[str] = None
         self._http = httpx.AsyncClient(timeout=15.0)
         self._lock = asyncio.Lock()
+        self._auth_lock = asyncio.Lock()
         self._last_call = 0.0
         self.rps = float(os.getenv("KIS_REST_RPS", "7"))
 
@@ -300,7 +301,12 @@ class KISClient:
             self.last_auth_error = type(e).__name__; raise
 
     async def ensure_token(self):
-        if not self.token or now() - self.token_at > self.token_ttl:
+        if self.token and now() - self.token_at <= self.token_ttl:
+            return
+        async with self._auth_lock:
+            # Another coroutine may have refreshed the token while we waited.
+            if self.token and now() - self.token_at <= self.token_ttl:
+                return
             await self.auth()
 
     async def _get(self, path: str, tr_id: str, params: dict, retries: int = 2) -> dict:
@@ -323,7 +329,7 @@ class KISClient:
         raise last
 
     async def price(self, symbol: str) -> dict:
-        j = await self._get(PRICE_PATH, PRICE_TR, {"FID_COND_MRKT_DIV_CODE":"UN","FID_INPUT_ISCD":symbol})
+        j = await self._get(PRICE_PATH, PRICE_TR, {"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":symbol})
         o = j.get("output") or {}
         return {
             "symbol":symbol,"price":fnum(o.get("stck_prpr")),"change_rate":fnum(o.get("prdy_ctrt")),
@@ -334,7 +340,7 @@ class KISClient:
 
     async def daily(self, symbol: str) -> List[dict]:
         j = await self._get(DAILY_PATH, DAILY_TR, {
-            "FID_COND_MRKT_DIV_CODE":"UN","FID_INPUT_ISCD":symbol,"FID_PERIOD_DIV_CODE":"D","FID_ORG_ADJ_PRC":"0"
+            "FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":symbol,"FID_PERIOD_DIV_CODE":"D","FID_ORG_ADJ_PRC":"0"
         })
         out=[]
         for o in j.get("output") or []:
