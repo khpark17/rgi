@@ -1995,7 +1995,25 @@ class LiveRGIEngine:
                     hist,inv,est,news,dart_res,cons_raw,actual_q,opn=await asyncio.gather(
                         self.kis.daily(item.symbol),self.kis.investor(item.symbol),self.kis.investor_estimate(item.symbol),
                         self.kis.news_titles(item.symbol),dart_task,self.kis.estimate_perform(item.symbol),
-                        self.kis.income_statement(item.symbol,True),self.kis.invest_opinion(item.symbol))
+                        self.kis.income_statement(item.symbol,True),self.kis.invest_opinion(item.symbol),
+                        return_exceptions=True)
+                    # LIVEFIX5: optional enrichment is fail-soft. One KIS 5xx must not drop the whole symbol.
+                    enrichment_errors={}
+                    names=("history","investor_confirmed","investor_estimate","news_title","dart",
+                           "consensus_estimate","actual_income_quarterly","invest_opinion")
+                    vals=[hist,inv,est,news,dart_res,cons_raw,actual_q,opn]
+                    for nm,val in zip(names,vals):
+                        if isinstance(val,BaseException):
+                            enrichment_errors[nm]=f"{type(val).__name__}:{str(val)[:180]}"
+                    # History + confirmed investor flow are core score inputs: preserve missingness, never zero-impute.
+                    hist=[] if isinstance(hist,BaseException) else hist
+                    inv=[] if isinstance(inv,BaseException) else inv
+                    est=[] if isinstance(est,BaseException) else est
+                    news=[] if isinstance(news,BaseException) else news
+                    dart_res={"configured":False,"rows":[],"degraded":True} if isinstance(dart_res,BaseException) else dart_res
+                    cons_raw={} if isinstance(cons_raw,BaseException) else cons_raw
+                    actual_q=[] if isinstance(actual_q,BaseException) else actual_q
+                    opn=[] if isinstance(opn,BaseException) else opn
                     # Canonicalize external live response shapes at the enrichment boundary.
                     hist=[x for x in (hist if isinstance(hist,list) else []) if isinstance(x,dict)]
                     inv=[x for x in (inv if isinstance(inv,list) else []) if isinstance(x,dict)]
@@ -2009,6 +2027,12 @@ class LiveRGIEngine:
                         dart_res=dict(dart_res)
                         dart_res["rows"]=[x for x in (dart_res.get("rows") or []) if isinstance(x,dict)]
                     feat=assemble_symbol(item,q,hist,inv,regimes.get(item.market),self.rt.latest.get(item.symbol),news)
+                    feat["enrichment_health"]={
+                        "degraded":bool(enrichment_errors),
+                        "errors":enrichment_errors,
+                        "missing_components":list(enrichment_errors.keys()),
+                        "policy":"FAIL_SOFT_NO_ZERO_IMPUTE"
+                    }
                     feat["intraday_investor_estimate"]=est
                     feat["news_titles"]=news[:20]
                     rt_now=self.rt.latest.get(item.symbol) or {}
@@ -2047,7 +2071,8 @@ class LiveRGIEngine:
                         "actual_income_statement":"KIS_QUARTERLY_INCOME" if actual_q else "NO_DATA",
                         "earnings_surprise":"PIT_STRICT_PENDING_PERIOD_MATCH",
                         "earnings_schedule":"K19_ENGINE_READY_OFFICIAL_IR_FEED_PENDING",
-                        "analyst_revision":"KIS_INVEST_OPINION" if opn else "NO_DATA"}
+                        "analyst_revision":"KIS_INVEST_OPINION" if opn else "NO_DATA",
+                        "degraded_components":list(enrichment_errors.keys())}
                     raw_events=[]
                     for nr in news:
                         raw_events.append({"symbol":item.symbol,"title":nr.get("title") or nr.get("news_title") or "",
