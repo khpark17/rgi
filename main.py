@@ -213,6 +213,11 @@ class RealtimeManager:
             if len(row) < 15:
                 continue
             symbol = row[0]
+            if len(symbol) != 6 or not symbol.isdigit() or symbol not in self.symbols:
+    continue
+
+
+            
             data = {
                 "symbol": symbol,
                 "trade_time": row[1],
