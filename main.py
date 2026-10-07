@@ -1608,21 +1608,29 @@ def _num_text(v):
     except Exception: return None
 
 def normalize_estimate_perform(raw):
-    periods=[str(x.get("dt") or "").strip() for x in (raw.get("output4") or [])]
-    periods=[p for p in periods if p]
+    # Fail closed on unexpected live KIS shapes. Never zero-impute malformed rows.
+    if not isinstance(raw,dict):
+        return {"symbol":None,"periods":[],"table":[],"source":"KIS_ESTIMATE_PERFORM",
+                "retrieved_at":None,"shape_warning":"RAW_NOT_DICT"}
+    periods=[]
+    for x in (raw.get("output4") or []):
+        if isinstance(x,dict):
+            p=str(x.get("dt") or "").strip()
+            if p: periods.append(p)
     def rows_to_metrics(rows,labels):
         out={}
         for i,row in enumerate(rows or []):
+            if not isinstance(row,dict):
+                continue
             label=labels[i] if i<len(labels) else f"row_{i+1}"
-            vals=[]
-            for n in range(1,6):
-                vals.append(_num_text(row.get(f"data{n}")))
+            vals=[_num_text(row.get(f"data{n}")) for n in range(1,6)]
             out[label]=vals
         return out
     income=rows_to_metrics(raw.get("output2") or [],ESTIMATE_INCOME_ROWS)
     indicators=rows_to_metrics(raw.get("output3") or [],ESTIMATE_INDICATOR_ROWS)
     table=[]
-    n=max(len(periods), max((len(v) for v in income.values()),default=0), max((len(v) for v in indicators.values()),default=0))
+    n=max(len(periods), max((len(v) for v in income.values()),default=0),
+          max((len(v) for v in indicators.values()),default=0))
     for i in range(n):
         rec={"period":periods[i] if i<len(periods) else None,"estimated":None}
         if rec["period"]:
@@ -1904,7 +1912,7 @@ class LiveRGIEngine:
         cov=self.succeeded/self.total if self.total else 0.0
         return {"running":self.running,"started_at":self.started_at,"finished_at":self.finished_at,"last_error":self.last_error,
                 "universe":self.universe.status(),"universe_total":self.universe_total,"discovery_quote_total":self.total,"attempted":self.attempted,"succeeded":self.succeeded,
-                "failed":self.failed,"coverage_ratio":cov,"candidate_n":self.candidate_n,"enriched":len(self.features),
+                "failed":self.failed,"coverage_ratio":cov,"candidate_n":self.candidate_n,"enriched":len(self.features),"enriched_ok":sum(1 for f in self.features.values() if "error" not in f),"enriched_error":sum(1 for f in self.features.values() if "error" in f),
                 "snapshot_first_at":self.first_quote_at,"snapshot_last_at":self.last_quote_at,
                 "snapshot_span_sec":((self.last_quote_at-self.first_quote_at) if self.first_quote_at and self.last_quote_at else None),
                 "classification":self.list_result.get("classification"),"k6_visible_live":"KIS_TITLE_ONLY_PARTIAL","market_data_mode":"UN_INTEGRATED","intraday_flow_estimate":True,"program_ws_integrated":True,
